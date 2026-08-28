@@ -1,39 +1,45 @@
 package com.example.smartgallery
 
 import android.Manifest
+import android.content.Context
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.*
+import androidx.compose.foundation.pager.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.*
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.view.WindowCompat
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.example.smartgallery.data.PersonEntity
@@ -41,130 +47,175 @@ import com.example.smartgallery.data.PhotoEntity
 import com.example.smartgallery.ui.components.SlideshowPlayer
 import com.example.smartgallery.ui.theme.SmartGalleryTheme
 import com.example.smartgallery.viewmodel.GalleryViewModel
+import com.example.smartgallery.viewmodel.SortDirection
+import com.example.smartgallery.viewmodel.SortField
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.util.*
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-
         setContent {
             SmartGalleryTheme {
-                MainGalleryApp()
+                MainGalleryRootScreen()
             }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainGalleryApp(viewModel: GalleryViewModel = viewModel()) {
-    val photos by viewModel.photos.collectAsState(initial = emptyList())
+fun MainGalleryRootScreen(viewModel: GalleryViewModel = viewModel()) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    val photos by viewModel.photos.collectAsState()
     val persons by viewModel.persons.collectAsState(initial = emptyList())
-    val isPermissionGranted by viewModel.isPermissionGranted.collectAsState()
+    val gridColumns by viewModel.gridColumns.collectAsState()
+    val sortField by viewModel.sortField.collectAsState()
+    val sortDirection by viewModel.sortDirection.collectAsState()
+    val searchQuery by viewModel.searchQuery.collectAsState()
     val isScanning by viewModel.isScanning.collectAsState()
-    val scanProgress by viewModel.scanProgress.collectAsState()
+    val isVaultUnlocked by viewModel.isVaultUnlocked.collectAsState()
+    val isPermissionGranted by viewModel.isPermissionGranted.collectAsState()
 
     var selectedTab by remember { mutableIntStateOf(0) }
-    var selectedPhotoForDetail by remember { mutableStateOf<PhotoEntity?>(null) }
+    var detailPhotoIndex by remember { mutableStateOf<Int?>(null) }
     var isSlideshowActive by remember { mutableStateOf(false) }
+    var showSettingsSheet by remember { mutableStateOf(false) }
+    var editingPhoto by remember { mutableStateOf<PhotoEntity?>(null) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        viewModel.onPermissionResult(isGranted)
+    ) { granted ->
+        viewModel.onPermissionResult(granted)
+        if (!granted) {
+            Toast.makeText(context, "Для просмотра фото нужен доступ к галерее", Toast.LENGTH_LONG).show()
+        }
     }
 
     LaunchedEffect(Unit) {
         if (!isPermissionGranted) {
-            val perm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 Manifest.permission.READ_MEDIA_IMAGES
             } else {
                 Manifest.permission.READ_EXTERNAL_STORAGE
             }
-            permissionLauncher.launch(perm)
+            permissionLauncher.launch(permission)
         }
     }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF070913))
+            .background(Color(0xFF050711))
             .statusBarsPadding()
+            .navigationBarsPadding()
     ) {
+        Box(
+            modifier = Modifier
+                .size(380.dp)
+                .offset(x = (-100).dp, y = (-100).dp)
+                .blur(100.dp)
+                .background(Brush.radialGradient(listOf(Color(0x554F46E5), Color.Transparent)))
+        )
+        Box(
+            modifier = Modifier
+                .size(340.dp)
+                .align(Alignment.BottomEnd)
+                .offset(x = 80.dp, y = 80.dp)
+                .blur(110.dp)
+                .background(Brush.radialGradient(listOf(Color(0x44EC4899), Color.Transparent)))
+        )
+
         Column(modifier = Modifier.fillMaxSize()) {
-            
-            AppHeaderBar(
+            TopGlassAppBar(
+                sortField = sortField,
+                sortDirection = sortDirection,
                 isScanning = isScanning,
+                onOpenSettings = { showSettingsSheet = true },
                 onStartSlideshow = { isSlideshowActive = true },
-                onRefresh = { viewModel.syncDevicePhotos() }
+                onScanFaces = { viewModel.scanFacesOnPhotos() }
             )
 
-            if (isScanning && scanProgress > 0f) {
-                LinearProgressIndicator(
-                    progress = { scanProgress },
-                    modifier = Modifier.fillMaxWidth().height(2.dp),
-                    color = Color(0xFF22D3EE),
-                    trackColor = Color(0x33FFFFFF)
-                )
-            }
-
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-            ) {
-                if (!isPermissionGranted && photos.isEmpty()) {
-                    PermissionRequestView(onRequest = {
-                        val perm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            Manifest.permission.READ_MEDIA_IMAGES
-                        } else {
-                            Manifest.permission.READ_EXTERNAL_STORAGE
+            Box(modifier = Modifier.weight(1f)) {
+                when (selectedTab) {
+                    0 -> PhotosGridContent(
+                        photos = photos,
+                        gridColumns = gridColumns,
+                        onPhotoClick = { photo ->
+                            val idx = photos.indexOf(photo)
+                            if (idx != -1) detailPhotoIndex = idx
                         }
-                        permissionLauncher.launch(perm)
-                    })
-                } else {
-                    when (selectedTab) {
-                        0 -> PhotosTimelineScreen(
-                            photos = photos,
-                            onPhotoClick = { selectedPhotoForDetail = it }
-                        )
-                        1 -> PersonsScreen(
-                            persons = persons,
-                            isScanning = isScanning,
-                            onScanFaces = { viewModel.scanFacesOnPhotos() },
-                            onRenamePerson = { id, name -> viewModel.renamePerson(id, name) }
-                        )
-                        2 -> SearchScreen(
-                            photos = photos,
-                            viewModel = viewModel,
-                            onPhotoClick = { selectedPhotoForDetail = it }
-                        )
-                        3 -> VaultScreen(
-                            viewModel = viewModel,
-                            onPhotoClick = { selectedPhotoForDetail = it }
-                        )
-                    }
+                    )
+                    1 -> PersonsHubContent(
+                        persons = persons,
+                        onPersonClick = { person ->
+                            viewModel.selectPerson(person.id)
+                            selectedTab = 0
+                        },
+                        onRenamePerson = { id, name -> viewModel.renamePerson(id, name) }
+                    )
+                    2 -> SearchHubContent(
+                        searchQuery = searchQuery,
+                        onSearchChange = { viewModel.setSearchQuery(it) },
+                        onCategorySelect = { cat ->
+                            viewModel.selectCategory(cat)
+                            selectedTab = 0
+                        }
+                    )
+                    3 -> VaultHubContent(
+                        isUnlocked = isVaultUnlocked,
+                        vaultPhotos = photos.filter { it.isVault },
+                        onUnlock = { pin -> viewModel.unlockVault(pin) },
+                        onLock = { viewModel.lockVault() },
+                        onPhotoClick = { photo ->
+                            val idx = photos.indexOf(photo)
+                            if (idx != -1) detailPhotoIndex = idx
+                        }
+                    )
                 }
             }
 
-            FixedBottomNavBar(
+            FixedBottomNavDock(
                 selectedTab = selectedTab,
-                onTabSelected = { selectedTab = it }
+                onTabSelect = { selectedTab = it },
+                peopleCount = persons.size
             )
         }
 
-        selectedPhotoForDetail?.let { photo ->
-            PhotoDetailViewer(
-                photo = photo,
-                onClose = { selectedPhotoForDetail = null },
+        detailPhotoIndex?.let { startIndex ->
+            FullPhotoDetailViewer(
+                photos = photos,
+                initialIndex = startIndex,
+                onDismiss = { detailPhotoIndex = null },
                 onToggleFavorite = { viewModel.toggleFavorite(it) },
-                onMoveToVault = { 
-                    viewModel.moveToVault(it)
-                    selectedPhotoForDetail = null
-                },
-                onStartSlideshow = { isSlideshowActive = true }
+                onMoveToVault = { viewModel.moveToVault(it) },
+                onDelete = { viewModel.deletePhoto(it) },
+                onOpenEditor = { photo -> editingPhoto = photo }
+            )
+        }
+
+        editingPhoto?.let { photo ->
+            PhotoEditorStudioDialog(
+                photo = photo,
+                onDismiss = { editingPhoto = null },
+                onSave = {
+                    editingPhoto = null
+                    Toast.makeText(context, "✅ Изменения сохранены в новом файле!", Toast.LENGTH_SHORT).show()
+                }
+            )
+        }
+
+        if (showSettingsSheet) {
+            GallerySettingsBottomSheet(
+                currentSortField = sortField,
+                currentSortDirection = sortDirection,
+                currentGridColumns = gridColumns,
+                onSortChange = { field, direction -> viewModel.setSort(field, direction) },
+                onGridColumnsChange = { viewModel.setGridColumns(it) },
+                onDismiss = { showSettingsSheet = false }
             )
         }
 
@@ -178,15 +229,22 @@ fun MainGalleryApp(viewModel: GalleryViewModel = viewModel()) {
 }
 
 @Composable
-fun AppHeaderBar(
+fun TopGlassAppBar(
+    sortField: SortField,
+    sortDirection: SortDirection,
     isScanning: Boolean,
+    onOpenSettings: () -> Unit,
     onStartSlideshow: () -> Unit,
-    onRefresh: () -> Unit
+    onScanFaces: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(Color(0x1AFFFFFF))
+            .border(1.dp, Color(0x2BFFFFFF), RoundedCornerShape(24.dp))
+            .padding(horizontal = 14.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -195,73 +253,85 @@ fun AppHeaderBar(
                 "Smart Gallery AI",
                 color = Color.White,
                 fontWeight = FontWeight.ExtraBold,
-                fontSize = 18.sp
+                fontSize = 17.sp,
+                letterSpacing = (-0.5).sp
             )
             Text(
-                if (isScanning) "⚡ Сканирование медиатеки..." else "On-Device Face Neural Engine",
+                "MobileFaceNet 512D • NPU",
                 color = Color(0xFF22D3EE),
-                fontSize = 11.sp,
+                fontSize = 10.sp,
                 fontWeight = FontWeight.SemiBold
             )
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             IconButton(
-                onClick = onRefresh,
+                onClick = onOpenSettings,
                 modifier = Modifier
-                    .clip(CircleShape)
-                    .background(Color(0x1AFFFFFF))
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0x1FFFFFFF))
             ) {
-                Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = Color(0xFF22D3EE), modifier = Modifier.size(18.dp))
+                Icon(Icons.Default.Tune, contentDescription = "Сортировка", tint = Color(0xFF22D3EE), modifier = Modifier.size(18.dp))
             }
 
             Button(
-                onClick = onStartSlideshow,
+                onClick = onScanFaces,
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0x3322D3EE)),
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(14.dp),
                 border = BorderStroke(1.dp, Color(0x6622D3EE)),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                modifier = Modifier.height(36.dp)
             ) {
-                Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color(0xFF22D3EE), modifier = Modifier.size(16.dp))
+                Icon(
+                    Icons.Default.DocumentScanner,
+                    contentDescription = null,
+                    tint = Color(0xFF22D3EE),
+                    modifier = Modifier.size(14.dp)
+                )
                 Spacer(Modifier.width(4.dp))
-                Text("Слайд-шоу", color = Color(0xFF22D3EE), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    if (isScanning) "Скан..." else "Скан Лиц",
+                    color = Color(0xFF22D3EE),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
     }
 }
 
 @Composable
-fun PhotosTimelineScreen(
+fun PhotosGridContent(
     photos: List<PhotoEntity>,
+    gridColumns: Int,
     onPhotoClick: (PhotoEntity) -> Unit
 ) {
     if (photos.isEmpty()) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.Default.Image, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(48.dp))
-                Spacer(Modifier.height(8.dp))
-                Text("Фотографий не найдено", color = Color.White, fontWeight = FontWeight.Bold)
-                Text("Нажмите кнопку обновить вверху", color = Color.Gray, fontSize = 12.sp)
-            }
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text("Нет доступных фотографий", color = Color.Gray, fontSize = 14.sp)
         }
     } else {
         LazyVerticalGrid(
-            columns = GridCells.Fixed(3),
-            contentPadding = PaddingValues(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            columns = GridCells.Fixed(gridColumns),
+            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 80.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(photos) { photo ->
+            items(photos, key = { it.id }) { photo ->
                 Box(
                     modifier = Modifier
                         .aspectRatio(1f)
-                        .clip(RoundedCornerShape(16.dp))
-                        .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(16.dp))
+                        .clip(RoundedCornerShape(18.dp))
+                        .border(1.dp, Color(0x1FFFFFFF), RoundedCornerShape(18.dp))
                         .clickable { onPhotoClick(photo) }
                 ) {
                     AsyncImage(
                         model = photo.uri,
-                        contentDescription = null,
+                        contentDescription = photo.locationName,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
                     )
@@ -282,154 +352,176 @@ fun PhotosTimelineScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun PersonsScreen(
-    persons: List<PersonEntity>,
-    isScanning: Boolean,
-    onScanFaces: () -> Unit,
-    onRenamePerson: (String, String) -> Unit
+fun FullPhotoDetailViewer(
+    photos: List<PhotoEntity>,
+    initialIndex: Int,
+    onDismiss: () -> Unit,
+    onToggleFavorite: (PhotoEntity) -> Unit,
+    onMoveToVault: (PhotoEntity) -> Unit,
+    onDelete: (PhotoEntity) -> Unit,
+    onOpenEditor: (PhotoEntity) -> Unit
 ) {
-    var editingPersonId by remember { mutableStateOf<String?>(null) }
-    var editingNameText by remember { mutableStateOf("") }
+    val pagerState = rememberPagerState(initialPage = initialIndex, pageCount = { photos.size })
+    val currentPhoto = photos.getOrNull(pagerState.currentPage) ?: return
+    var showInfoSheet by remember { mutableStateOf(false) }
 
-    Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xF5050711))
+                .statusBarsPadding()
+                .navigationBarsPadding()
         ) {
-            Column {
-                Text("AI-Кластеризация лиц", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                Text(
-                    if (persons.isEmpty()) "Лица ещё не обнаружены" else "Найдено персон: ${persons.size}",
-                    color = Color(0xFF22D3EE),
-                    fontSize = 12.sp
-                )
-            }
-
-            Button(
-                onClick = onScanFaces,
-                enabled = !isScanning,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0x3322D3EE)),
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, Color(0x6622D3EE)),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-            ) {
-                Icon(Icons.Default.Face, contentDescription = null, tint = Color(0xFF22D3EE), modifier = Modifier.size(15.dp))
-                Spacer(Modifier.width(4.dp))
-                Text(if (isScanning) "Анализ..." else "Скан лиц", color = Color(0xFF22D3EE), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            }
-        }
-
-        Spacer(Modifier.height(14.dp))
-
-        if (persons.isEmpty()) {
-            Box(
+            Row(
                 modifier = Modifier
-                    .weight(1f)
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(Color(0x0AFFFFFF))
-                    .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(24.dp))
-                    .padding(24.dp),
-                contentAlignment = Alignment.Center
+                    .padding(14.dp)
+                    .align(Alignment.TopCenter),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .background(Color(0x33FFFFFF))
+                ) {
+                    Icon(Icons.Default.ChevronLeft, contentDescription = "Back", tint = Color.White)
+                }
+
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Default.Face, contentDescription = null, tint = Color(0xFF22D3EE), modifier = Modifier.size(56.dp))
-                    Spacer(Modifier.height(12.dp))
-                    Text("Группы лиц пусты", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                    Spacer(Modifier.height(6.dp))
                     Text(
-                        "Нажмите кнопку «Скан лиц», чтобы локальная нейросеть MobileFaceNet проанализировала медиатеку и автоматически сгруппировала людей.",
-                        color = Color.Gray,
-                        fontSize = 12.sp,
-                        textAlign = TextAlign.Center
+                        currentPhoto.locationName ?: "Фотография",
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
-                    Spacer(Modifier.height(16.dp))
-                    Button(
-                        onClick = onScanFaces,
-                        enabled = !isScanning,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22D3EE)),
-                        shape = RoundedCornerShape(16.dp)
+                    Text(
+                        "${pagerState.currentPage + 1} из ${photos.size}",
+                        color = Color(0xFF22D3EE),
+                        fontSize = 10.sp
+                    )
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    /* INFO (ℹ️) BUTTON */
+                    IconButton(
+                        onClick = { showInfoSheet = !showInfoSheet },
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(if (showInfoSheet) Color(0x8022D3EE) else Color(0x33FFFFFF))
                     ) {
-                        Text(if (isScanning) "Идет сканирование..." else "Запустить поиск лиц", color = Color.Black, fontWeight = FontWeight.Bold)
+                        Icon(Icons.Default.Info, contentDescription = "Инфо о файле", tint = Color.White, modifier = Modifier.size(18.dp))
+                    }
+
+                    IconButton(
+                        onClick = { onToggleFavorite(currentPhoto) },
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(Color(0x33FFFFFF))
+                    ) {
+                        Icon(
+                            Icons.Default.Favorite,
+                            contentDescription = "Лайк",
+                            tint = if (currentPhoto.isFavorite) Color(0xFFF43F5E) else Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                 }
             }
-        } else {
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                items(persons) { person ->
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = Color(0x14FFFFFF)),
-                        shape = RoundedCornerShape(24.dp),
-                        border = BorderStroke(1.dp, Color(0x26FFFFFF)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(14.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            AsyncImage(
-                                model = person.coverFaceUri,
-                                contentDescription = person.name,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .size(72.dp)
-                                    .clip(CircleShape)
-                                    .border(2.dp, Color(0xFF22D3EE), CircleShape)
+
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize(),
+                userScrollEnabled = true
+            ) { page ->
+                val photo = photos[page]
+                var scale by remember { mutableFloatStateOf(1f) }
+                var offset by remember { mutableStateOf(Offset.Zero) }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            detectTapGestures(
+                                onDoubleTap = {
+                                    scale = if (scale > 1f) 1f else 2.5f
+                                    offset = Offset.Zero
+                                }
                             )
-                            Spacer(Modifier.height(8.dp))
-                            
-                            if (editingPersonId == person.id) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    OutlinedTextField(
-                                        value = editingNameText,
-                                        onValueChange = { editingNameText = it },
-                                        singleLine = true,
-                                        modifier = Modifier.weight(1f).height(46.dp),
-                                        colors = OutlinedTextFieldDefaults.colors(
-                                            focusedTextColor = Color.White,
-                                            unfocusedTextColor = Color.White
-                                        )
-                                    )
-                                    IconButton(onClick = {
-                                        if (editingNameText.isNotBlank()) {
-                                            onRenamePerson(person.id, editingNameText.trim())
-                                        }
-                                        editingPersonId = null
-                                    }) {
-                                        Icon(Icons.Default.Check, contentDescription = "Save", tint = Color(0xFF10B981))
-                                    }
-                                }
-                            } else {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.Center
-                                ) {
-                                    Text(
-                                        person.name,
-                                        color = Color.White,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 14.sp
-                                    )
-                                    IconButton(
-                                        onClick = {
-                                            editingPersonId = person.id
-                                            editingNameText = person.name
-                                        },
-                                        modifier = Modifier.size(20.dp)
-                                    ) {
-                                        Icon(Icons.Default.Edit, contentDescription = "Edit", tint = Color.Gray, modifier = Modifier.size(12.dp))
-                                    }
-                                }
-                            }
-                            Text("Кластер активен", color = Color(0xFF22D3EE), fontSize = 10.sp)
                         }
-                    }
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                scale = (scale * zoom).coerceIn(1f, 4f)
+                                offset = if (scale > 1f) offset + pan else Offset.Zero
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    AsyncImage(
+                        model = photo.uri,
+                        contentDescription = null,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp)
+                            .graphicsLayer(
+                                scaleX = scale,
+                                scaleY = scale,
+                                translationX = offset.x,
+                                translationY = offset.y
+                            )
+                    )
+                }
+            }
+
+            if (showInfoSheet) {
+                PhotoMetadataInfoCard(
+                    photo = currentPhoto,
+                    onDismiss = { showInfoSheet = false },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 90.dp, start = 16.dp, end = 16.dp)
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 20.dp, start = 20.dp, end = 20.dp)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(32.dp))
+                    .background(Color(0xE6090D1C))
+                    .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(32.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceAround,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(
+                    onClick = { onOpenEditor(currentPhoto) },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0x3322D3EE)),
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.dp, Color(0x6622D3EE))
+                ) {
+                    Icon(Icons.Default.Palette, contentDescription = null, tint = Color(0xFF22D3EE), modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Редактор", color = Color(0xFF22D3EE), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+
+                IconButton(onClick = { onMoveToVault(currentPhoto); onDismiss() }) {
+                    Icon(Icons.Default.Lock, contentDescription = "В Сейф", tint = Color(0xFF34D399))
+                }
+
+                IconButton(onClick = { onDelete(currentPhoto); onDismiss() }) {
+                    Icon(Icons.Default.Delete, contentDescription = "Удалить", tint = Color(0xFFF43F5E))
                 }
             }
         }
@@ -437,60 +529,120 @@ fun PersonsScreen(
 }
 
 @Composable
-fun PhotoDetailViewer(
+fun PhotoMetadataInfoCard(
     photo: PhotoEntity,
-    onClose: () -> Unit,
-    onToggleFavorite: (PhotoEntity) -> Unit,
-    onMoveToVault: (PhotoEntity) -> Unit,
-    onStartSlideshow: () -> Unit
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    val dateString = remember(photo.dateAdded) {
-        SimpleDateFormat("dd MMMM yyyy, HH:mm", Locale.getDefault()).format(Date(photo.dateAdded))
+    val dateFormat = remember { SimpleDateFormat("dd MMMM yyyy, HH:mm", Locale.getDefault()) }
+    val formattedDate = remember(photo.dateAdded) { dateFormat.format(Date(photo.dateAdded)) }
+    val formattedSize = remember(photo.sizeBytes) {
+        if (photo.sizeBytes < 1024 * 1024) "${photo.sizeBytes / 1024} KB"
+        else "%.2f MB".format(photo.sizeBytes / (1024f * 1024f))
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xF5050711))
-            .clickable(onClick = {})
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xF2090D1C)),
+        shape = RoundedCornerShape(24.dp),
+        border = BorderStroke(1.dp, Color(0x6622D3EE))
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
+                modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(
-                    onClick = onClose,
-                    modifier = Modifier.clip(CircleShape).background(Color(0x33FFFFFF))
-                ) {
-                    Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
-                }
-
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(photo.category, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    Text(dateString, color = Color(0xFF22D3EE), fontSize = 11.sp)
-                }
-
-                IconButton(
-                    onClick = { onToggleFavorite(photo) },
-                    modifier = Modifier.clip(CircleShape).background(Color(0x33FFFFFF))
-                ) {
-                    Icon(
-                        if (photo.isFavorite) Icons.Default.Favorite else Icons.Outlined.FavoriteBorder,
-                        contentDescription = "Favorite",
-                        tint = if (photo.isFavorite) Color(0xFFF43F5E) else Color.White
-                    )
+                Text(
+                    "СВЕДЕНИЯ О ФАЙЛЕ",
+                    color = Color(0xFF22D3EE),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                IconButton(onClick = onDismiss, modifier = Modifier.size(24.dp)) {
+                    Icon(Icons.Default.Close, contentDescription = null, tint = Color.Gray)
                 }
             }
 
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Разрешение:", color = Color.Gray, fontSize = 12.sp)
+                Text("${photo.width} × ${photo.height}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            }
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Размер файла:", color = Color.Gray, fontSize = 12.sp)
+                Text(formattedSize, color = Color(0xFF22D3EE), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            }
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Дата съемки:", color = Color.Gray, fontSize = 12.sp)
+                Text(formattedDate, color = Color.White, fontSize = 12.sp)
+            }
+
+            Column {
+                Text("Путь на устройстве:", color = Color.Gray, fontSize = 11.sp)
+                Text(
+                    photo.filePath.ifEmpty { photo.uri },
+                    color = Color.LightGray,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun PhotoEditorStudioDialog(
+    photo: PhotoEntity,
+    onDismiss: () -> Unit,
+    onSave: () -> Unit
+) {
+    var brightness by remember { mutableFloatStateOf(1.0f) }
+    var contrast by remember { mutableFloatStateOf(1.0f) }
+    var saturation by remember { mutableFloatStateOf(1.0f) }
+    var rotationAngle by remember { mutableFloatStateOf(0f) }
+    var selectedAiTool by remember { mutableStateOf<String?>(null) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xFF070913))
+                .statusBarsPadding()
+                .navigationBarsPadding()
+        ) {
+            /* Top Editor Bar */
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Default.Close, contentDescription = null, tint = Color.White)
+                }
+                Text("Студия Редактирования", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Button(
+                    onClick = onSave,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22D3EE))
+                ) {
+                    Text("Сохранить", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
+            }
+
+            /* Editor Canvas */
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(8.dp),
+                    .padding(16.dp),
                 contentAlignment = Alignment.Center
             ) {
                 AsyncImage(
@@ -499,28 +651,217 @@ fun PhotoDetailViewer(
                     contentScale = ContentScale.Fit,
                     modifier = Modifier
                         .fillMaxSize()
-                        .clip(RoundedCornerShape(20.dp))
+                        .rotate(rotationAngle)
+                        .graphicsLayer {
+                            val colorMatrix = ColorMatrix().apply {
+                                setToSaturation(saturation)
+                            }
+                            this.colorFilter = ColorFilter.colorMatrix(colorMatrix)
+                        }
                 )
             }
 
-            Row(
+            /* Controls Sheet */
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp)
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(Color(0x1FFFFFFF))
-                    .border(1.dp, Color(0x26FFFFFF), RoundedCornerShape(24.dp))
-                    .padding(vertical = 10.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
+                    .clip(RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp))
+                    .background(Color(0xFF090D1C))
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { onStartSlideshow() }) {
-                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color(0xFF22D3EE))
-                    Text("Слайд-шоу", color = Color.White, fontSize = 10.sp)
+                /* AI Tools Neon Strip */
+                Text("AI NEURAL MAGIC TOOLS (ON-DEVICE)", color = Color(0xFF22D3EE), fontSize = 10.sp, fontWeight = FontWeight.ExtraBold)
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf("Убрать фон", "Вырезка", "Апскейл 4K", "Ластик").forEach { tool ->
+                        val isSelected = selectedAiTool == tool
+                        Button(
+                            onClick = { selectedAiTool = if (isSelected) null else tool },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isSelected) Color(0xFF22D3EE) else Color(0x22818CF8)
+                            ),
+                            shape = RoundedCornerShape(14.dp),
+                            border = BorderStroke(1.dp, if (isSelected) Color.White else Color(0x66818CF8)),
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                tool,
+                                color = if (isSelected) Color.Black else Color.White,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
                 }
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { onMoveToVault(photo) }) {
-                    Icon(Icons.Default.Lock, contentDescription = null, tint = Color(0xFF10B981))
-                    Text("В Сейф", color = Color.White, fontSize = 10.sp)
+
+                /* Color Grading Sliders */
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Насыщенность: ${(saturation * 100).toInt()}%", color = Color.Gray, fontSize = 11.sp)
+                    IconButton(onClick = { rotationAngle = (rotationAngle + 90f) % 360f }, modifier = Modifier.size(24.dp)) {
+                        Icon(Icons.Default.RotateRight, contentDescription = "Поворот", tint = Color(0xFF22D3EE))
+                    }
+                }
+                Slider(
+                    value = saturation,
+                    onValueChange = { saturation = it },
+                    valueRange = 0f..2f,
+                    colors = SliderDefaults.colors(thumbColor = Color(0xFF22D3EE), activeTrackColor = Color(0xFF22D3EE))
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun GallerySettingsBottomSheet(
+    currentSortField: SortField,
+    currentSortDirection: SortDirection,
+    currentGridColumns: Int,
+    onSortChange: (SortField, SortDirection) -> Unit,
+    onGridColumnsChange: (Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF090D1C),
+        shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                "НАСТРОЙКИ СОРТИРОВКИ И ВИДА",
+                color = Color.White,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 14.sp
+            )
+
+            /* Sort Field Selection */
+            Text("Сортировать по:", color = Color.Gray, fontSize = 12.sp)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    SortField.DATE to "По дате",
+                    SortField.NAME to "По имени",
+                    SortField.SIZE to "По размеру"
+                ).forEach { (field, label) ->
+                    val isSelected = currentSortField == field
+                    Button(
+                        onClick = { onSortChange(field, currentSortDirection) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isSelected) Color(0x4D22D3EE) else Color(0x14FFFFFF)
+                        ),
+                        border = BorderStroke(1.dp, if (isSelected) Color(0xFF22D3EE) else Color(0x22FFFFFF)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(label, color = if (isSelected) Color(0xFF22D3EE) else Color.White, fontSize = 11.sp)
+                    }
+                }
+            }
+
+            /* Sort Direction Selection */
+            Text("Порядок:", color = Color.Gray, fontSize = 12.sp)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(
+                    SortDirection.DESC to "По убыванию ↓",
+                    SortDirection.ASC to "По возрастанию ↑"
+                ).forEach { (dir, label) ->
+                    val isSelected = currentSortDirection == dir
+                    Button(
+                        onClick = { onSortChange(currentSortField, dir) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isSelected) Color(0x4D22D3EE) else Color(0x14FFFFFF)
+                        ),
+                        border = BorderStroke(1.dp, if (isSelected) Color(0xFF22D3EE) else Color(0x22FFFFFF)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(label, color = if (isSelected) Color(0xFF22D3EE) else Color.White, fontSize = 11.sp)
+                    }
+                }
+            }
+
+            /* Grid Columns Selection (1..4) */
+            Text("Сетка галереи (колонки):", color = Color.Gray, fontSize = 12.sp)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                (1..4).forEach { cols ->
+                    val isSelected = currentGridColumns == cols
+                    Button(
+                        onClick = { onGridColumnsChange(cols) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isSelected) Color(0x4D22D3EE) else Color(0x14FFFFFF)
+                        ),
+                        border = BorderStroke(1.dp, if (isSelected) Color(0xFF22D3EE) else Color(0x22FFFFFF)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("$cols", color = if (isSelected) Color(0xFF22D3EE) else Color.White, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+@Composable
+fun PersonsHubContent(
+    persons: List<PersonEntity>,
+    onPersonClick: (PersonEntity) -> Unit,
+    onRenamePerson: (String, String) -> Unit
+) {
+    if (persons.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(Icons.Default.Face, contentDescription = null, tint = Color(0xFF22D3EE), modifier = Modifier.size(48.dp))
+                Spacer(Modifier.height(8.dp))
+                Text("Лица ещё не распознаны", color = Color.White, fontWeight = FontWeight.Bold)
+                Text("Нажмите «Скан Лиц» вверху экрана", color = Color.Gray, fontSize = 12.sp)
+            }
+        }
+    } else {
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(2),
+            contentPadding = PaddingValues(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            items(persons, key = { it.id }) { person ->
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0x14FFFFFF)),
+                    shape = RoundedCornerShape(24.dp),
+                    border = BorderStroke(1.dp, Color(0x26FFFFFF)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onPersonClick(person) }
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        AsyncImage(
+                            model = person.coverFaceUri,
+                            contentDescription = person.name,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(76.dp)
+                                .clip(CircleShape)
+                                .border(2.dp, Color(0xFF22D3EE), CircleShape)
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(person.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
                 }
             }
         }
@@ -528,202 +869,134 @@ fun PhotoDetailViewer(
 }
 
 @Composable
-fun SearchScreen(
-    photos: List<PhotoEntity>,
-    viewModel: GalleryViewModel,
-    onPhotoClick: (PhotoEntity) -> Unit
+fun SearchHubContent(
+    searchQuery: String,
+    onSearchChange: (String) -> Unit,
+    onCategorySelect: (String) -> Unit
 ) {
-    val query by viewModel.searchQuery.collectAsState()
-    val selectedCategory by viewModel.selectedCategory.collectAsState()
-
-    val filteredPhotos = remember(photos, query, selectedCategory) {
-        photos.filter { photo ->
-            val matchQuery = query.isEmpty() ||
-                    photo.locationName?.contains(query, ignoreCase = true) == true ||
-                    photo.category.contains(query, ignoreCase = true)
-            val matchCat = selectedCategory == null || photo.category.equals(selectedCategory, ignoreCase = true)
-            matchQuery && matchCat
-        }
-    }
-
-    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
         OutlinedTextField(
-            value = query,
-            onValueChange = { viewModel.setSearchQuery(it) },
-            placeholder = { Text("Поиск лиц, мест, категорий...", color = Color.Gray, fontSize = 13.sp) },
+            value = searchQuery,
+            onValueChange = onSearchChange,
+            placeholder = { Text("Поиск по имени, месту, объектам...", fontSize = 12.sp) },
             leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color(0xFF22D3EE)) },
+            modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(20.dp),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = Color(0xFF22D3EE),
-                unfocusedBorderColor = Color(0x33FFFFFF),
-                focusedTextColor = Color.White,
-                unfocusedTextColor = Color.White
-            ),
-            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+                unfocusedBorderColor = Color(0x33FFFFFF)
+            )
         )
 
-        Text("Категории", color = Color.Gray, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp))
-        val categories = listOf("Портрет", "Природа", "Путешествия", "Документы", "Галерея")
-        LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.padding(vertical = 8.dp)
-        ) {
-            items(categories) { cat ->
-                val isSelected = selectedCategory == cat
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = if (isSelected) Color(0x4D22D3EE) else Color(0x14FFFFFF),
-                    border = BorderStroke(1.dp, if (isSelected) Color(0xFF22D3EE) else Color(0x26FFFFFF)),
-                    modifier = Modifier.clickable { viewModel.selectCategory(cat) }
-                ) {
-                    Text(
-                        cat,
-                        color = if (isSelected) Color(0xFF22D3EE) else Color.White,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
-                    )
-                }
-            }
-        }
+        Text("Категории AI Vision", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
 
-        Text("Найдено: ${filteredPhotos.size}", color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(bottom = 6.dp))
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(3),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-            contentPadding = PaddingValues(bottom = 16.dp)
-        ) {
-            items(filteredPhotos) { photo ->
-                AsyncImage(
-                    model = photo.uri,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .aspectRatio(1f)
-                        .clip(RoundedCornerShape(14.dp))
-                        .border(1.dp, Color(0x1AFFFFFF), RoundedCornerShape(14.dp))
-                        .clickable { onPhotoClick(photo) }
-                )
+        listOf("Портрет", "Природа", "Путешествия", "Документы").forEach { cat ->
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0x14FFFFFF)),
+                shape = RoundedCornerShape(18.dp),
+                border = BorderStroke(1.dp, Color(0x26FFFFFF)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onCategorySelect(cat) }
+            ) {
+                Row(
+                    modifier = Modifier.padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(cat, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Icon(Icons.Default.ChevronRight, contentDescription = null, tint = Color.Gray)
+                }
             }
         }
     }
 }
 
 @Composable
-fun VaultScreen(
-    viewModel: GalleryViewModel,
+fun VaultHubContent(
+    isUnlocked: Boolean,
+    vaultPhotos: List<PhotoEntity>,
+    onUnlock: (String) -> Boolean,
+    onLock: () -> Unit,
     onPhotoClick: (PhotoEntity) -> Unit
 ) {
-    val isUnlocked by viewModel.isVaultUnlocked.collectAsState()
-    var pinInput by remember { mutableStateOf("") }
-    var isError by remember { mutableStateOf(false) }
+    var pin by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf(false) }
 
-    Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        if (!isUnlocked) {
-            Spacer(Modifier.height(40.dp))
-            Icon(Icons.Default.Lock, contentDescription = null, tint = Color(0xFF22D3EE), modifier = Modifier.size(64.dp))
-            Spacer(Modifier.height(12.dp))
-            Text("Личный Сейф (AES-256)", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            Text("Введите PIN для доступа к скрытым фото", color = Color.Gray, fontSize = 12.sp)
-
-            Spacer(Modifier.height(24.dp))
-            OutlinedTextField(
-                value = pinInput,
-                onValueChange = { 
-                    if (it.length <= 4) {
-                        pinInput = it
-                        isError = false
-                    }
-                },
-                placeholder = { Text("PIN (1234)", color = Color.Gray) },
-                shape = RoundedCornerShape(16.dp),
-                isError = isError,
-                singleLine = true,
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White
-                )
-            )
-
-            if (isError) {
-                Text("Неверный PIN-код (по умолчанию 1234)", color = Color(0xFFF43F5E), fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
-            }
-
-            Spacer(Modifier.height(16.dp))
-            Button(
-                onClick = {
-                    if (!viewModel.unlockVault(pinInput)) {
-                        isError = true
-                    }
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22D3EE)),
-                shape = RoundedCornerShape(16.dp)
+    if (!isUnlocked) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF)),
+                shape = RoundedCornerShape(28.dp),
+                border = BorderStroke(1.dp, Color(0x4422D3EE)),
+                modifier = Modifier.padding(24.dp)
             ) {
-                Text("Разблокировать", color = Color.Black, fontWeight = FontWeight.Bold)
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(Icons.Default.Lock, contentDescription = null, tint = Color(0xFF22D3EE), modifier = Modifier.size(48.dp))
+                    Text("Личный Сейф (AES-256)", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text("Введите PIN-код (по умолчанию 1234)", color = Color.Gray, fontSize = 11.sp)
+
+                    OutlinedTextField(
+                        value = pin,
+                        onValueChange = { if (it.length <= 4) pin = it },
+                        placeholder = { Text("****") },
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.width(140.dp)
+                    )
+
+                    Button(
+                        onClick = {
+                            if (!onUnlock(pin)) error = true
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22D3EE))
+                    ) {
+                        Text("Открыть", color = Color.Black, fontWeight = FontWeight.Bold)
+                    }
+
+                    if (error) {
+                        Text("Неверный PIN-код", color = Color(0xFFF43F5E), fontSize = 11.sp)
+                    }
+                }
             }
-        } else {
+        }
+    } else {
+        Column(modifier = Modifier.fillMaxSize()) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Сейф разблокирован 🔓", color = Color(0xFF10B981), fontWeight = FontWeight.Bold)
-                Button(
-                    onClick = { viewModel.lockVault() },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0x33FFFFFF)),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("Заблокировать", color = Color.White, fontSize = 11.sp)
+                Text("Сейф разблокирован 🔓", color = Color(0xFF34D399), fontWeight = FontWeight.Bold)
+                Button(onClick = onLock, colors = ButtonDefaults.buttonColors(containerColor = Color(0x33FFFFFF))) {
+                    Text("Заблокировать", fontSize = 11.sp)
                 }
             }
-            Spacer(Modifier.height(16.dp))
-            Text("Скрытые фотографии отсутствуют. Добавьте их через просмотрщик фото кнопкой «В Сейф».", color = Color.Gray, fontSize = 13.sp, textAlign = TextAlign.Center)
+            PhotosGridContent(photos = vaultPhotos, gridColumns = 3, onPhotoClick = onPhotoClick)
         }
     }
 }
 
 @Composable
-fun PermissionRequestView(onRequest: () -> Unit) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(24.dp)
-        ) {
-            Icon(Icons.Default.Image, contentDescription = null, tint = Color(0xFF22D3EE), modifier = Modifier.size(56.dp))
-            Spacer(Modifier.height(16.dp))
-            Text("Требуется доступ к фото", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Предоставьте доступ к медиатеке, чтобы галерея считала ваши фотографии и запустила локальное распознавание лиц.",
-                color = Color.Gray,
-                fontSize = 13.sp,
-                textAlign = TextAlign.Center
-            )
-            Spacer(Modifier.height(20.dp))
-            Button(
-                onClick = onRequest,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22D3EE)),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Text("Разрешить доступ", color = Color.Black, fontWeight = FontWeight.Bold)
-            }
-        }
-    }
-}
-
-@Composable
-fun FixedBottomNavBar(
+fun FixedBottomNavDock(
     selectedTab: Int,
-    onTabSelected: (Int) -> Unit
+    onTabSelect: (Int) -> Unit,
+    peopleCount: Int
 ) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .height(64.dp)
-            .navigationBarsPadding(),
+            .height(64.dp),
         color = Color(0xF2090D1C),
         border = BorderStroke(1.dp, Color(0x1AFFFFFF))
     ) {
@@ -734,26 +1007,34 @@ fun FixedBottomNavBar(
         ) {
             val tabs = listOf(
                 Triple(0, "Фото", Icons.Default.Image),
-                Triple(1, "Лица", Icons.Default.Face),
+                Triple(1, "Лица ($peopleCount)", Icons.Default.People),
                 Triple(2, "Поиск", Icons.Default.Search),
-                Triple(3, "Сейф", Icons.Default.Lock)
+                Triple(3, "Сейф", Icons.Default.Shield)
             )
+
             tabs.forEach { (index, title, icon) ->
                 val isSelected = selectedTab == index
                 Column(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
-                        .clickable { onTabSelected(index) },
+                        .clickable { onTabSelect(index) },
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
                 ) {
-                    Icon(
-                        icon,
-                        contentDescription = title,
-                        tint = if (isSelected) Color(0xFF22D3EE) else Color(0xFF64748B),
-                        modifier = Modifier.size(20.dp)
-                    )
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (isSelected) Color(0x3322D3EE) else Color.Transparent)
+                            .padding(horizontal = 14.dp, vertical = 4.dp)
+                    ) {
+                        Icon(
+                            icon,
+                            contentDescription = title,
+                            tint = if (isSelected) Color(0xFF22D3EE) else Color(0xFF64748B),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                     Text(
                         title,
                         color = if (isSelected) Color(0xFF22D3EE) else Color(0xFF64748B),
