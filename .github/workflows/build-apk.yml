@@ -23,8 +23,11 @@ jobs:
       - name: 📱 Настройка Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: 🛠️ Автоматическая настройка Gradle
+      - name: 🛠️ Установка и фиксация Gradle 8.9
         uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.9'
+          cache-disabled: false
 
       - name: 🧠 Загрузка модели нейросети MobileFaceNet
         run: |
@@ -34,11 +37,9 @@ jobs:
             curl -L -o app/src/main/assets/mobile_facenet.tflite "https://github.com/MCarlomagno/FaceRecognitionAuth/raw/master/assets/mobilefacenet.tflite" || touch app/src/main/assets/mobile_facenet.tflite
           fi
 
-      - name: 🔑 Генерация обертки Gradle (если отсутствует)
+      - name: 🔑 Генерация обертки Gradle 8.9
         run: |
-          if [ ! -f "./gradlew" ]; then
-            gradle wrapper
-          fi
+          gradle wrapper --gradle-version 8.9 --distribution-type bin
           chmod +x ./gradlew
 
       - name: 🔨 Сборка Debug APK
