@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.SmartGallery" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#070913</item>
+        <item name="android:navigationBarColor">#090D1C</item>
+    </style>
+</resources>
