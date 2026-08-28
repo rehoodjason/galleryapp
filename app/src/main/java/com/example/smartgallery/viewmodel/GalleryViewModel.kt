@@ -13,10 +13,7 @@ import android.provider.MediaStore
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.smartgallery.data.FaceEntity
-import com.example.smartgallery.data.GalleryDatabase
-import com.example.smartgallery.data.PersonEntity
-import com.example.smartgallery.data.PhotoEntity
+import com.example.smartgallery.data.*
 import com.example.smartgallery.ml.FaceClusteringService
 import com.example.smartgallery.ml.FaceRecognitionEngine
 import kotlinx.coroutines.Dispatchers
@@ -38,8 +35,8 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     val rawPhotos = dao.getAllPhotos()
     val persons = dao.getAllPersons()
+    val vaultPhotos = dao.getVaultPhotos()
 
-    // Сортировка
     private val _sortField = MutableStateFlow(SortField.DATE)
     val sortField: StateFlow<SortField> = _sortField.asStateFlow()
 
@@ -49,24 +46,20 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     private val _gridColumns = MutableStateFlow(3)
     val gridColumns: StateFlow<Int> = _gridColumns.asStateFlow()
 
-    // Поиск и фильтры
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
     private val _selectedCategory = MutableStateFlow<String?>(null)
-    val selectedCategory: StateFlow<String?> = _selectedCategory.asStateFlow()
-
     private val _selectedPersonId = MutableStateFlow<String?>(null)
-    val selectedPersonId: StateFlow<String?> = _selectedPersonId.asStateFlow()
 
-    // Реактивный поток отсортированных и отфильтрованных фото
+    private val _isScanning = MutableStateFlow(false)
+    val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
+    
+    private val _isVaultUnlocked = MutableStateFlow(false)
+    val isVaultUnlocked: StateFlow<Boolean> = _isVaultUnlocked.asStateFlow()
+
     val photos: StateFlow<List<PhotoEntity>> = combine(
-        rawPhotos,
-        _sortField,
-        _sortDirection,
-        _searchQuery,
-        _selectedCategory,
-        _selectedPersonId
+        rawPhotos, _sortField, _sortDirection, _searchQuery, _selectedCategory, _selectedPersonId
     ) { photoList, field, direction, query, category, personId ->
         var list = photoList
 
@@ -74,16 +67,21 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             list = list.filter { it.category.equals(category, ignoreCase = true) }
         }
 
+        if (personId != null) {
+            val personPhotos = dao.getPhotosForPerson(personId).firstOrNull() ?: emptyList()
+            val personPhotoIds = personPhotos.map { it.id }.toSet()
+            list = list.filter { it.id in personPhotoIds }
+        }
+
         if (query.isNotBlank()) {
             val q = query.trim().lowercase()
             list = list.filter {
                 (it.locationName?.lowercase()?.contains(q) == true) ||
                         it.category.lowercase().contains(q) ||
-                        it.uri.lowercase().contains(q)
+                        it.filePath.lowercase().contains(q)
             }
         }
 
-        // Сортировка
         when (field) {
             SortField.DATE -> {
                 if (direction == SortDirection.DESC) list.sortedByDescending { it.dateAdded }
@@ -94,55 +92,14 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                 else list.sortedBy { it.locationName ?: it.id }
             }
             SortField.SIZE -> {
-                if (direction == SortDirection.DESC) list.sortedByDescending { it.dateAdded }
-                else list.sortedBy { it.dateAdded }
+                if (direction == SortDirection.DESC) list.sortedByDescending { it.sizeBytes }
+                else list.sortedBy { it.sizeBytes }
             }
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    // Состояния разрешений и сканирования
-    private val _isPermissionGranted = MutableStateFlow(checkMediaPermission(application))
-    val isPermissionGranted: StateFlow<Boolean> = _isPermissionGranted.asStateFlow()
-
-    private val _isScanning = MutableStateFlow(false)
-    val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
-
-    private val _scanProgress = MutableStateFlow(0f)
-    val scanProgress: StateFlow<Float> = _scanProgress.asStateFlow()
-
-    // Сейф
-    private val _isVaultUnlocked = MutableStateFlow(false)
-    val isVaultUnlocked: StateFlow<Boolean> = _isVaultUnlocked.asStateFlow()
-
     init {
-        if (_isPermissionGranted.value) {
-            syncDevicePhotos()
-        }
-    }
-
-    private fun checkMediaPermission(context: Context): Boolean {
-        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            Manifest.permission.READ_MEDIA_IMAGES
-        } else {
-            Manifest.permission.READ_EXTERNAL_STORAGE
-        }
-        return ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
-    }
-
-    fun onPermissionResult(granted: Boolean) {
-        _isPermissionGranted.value = granted
-        if (granted) {
-            syncDevicePhotos()
-        }
-    }
-
-    fun setSort(field: SortField, direction: SortDirection) {
-        _sortField.value = field
-        _sortDirection.value = direction
-    }
-
-    fun setGridColumns(cols: Int) {
-        _gridColumns.value = cols
+        syncDevicePhotos()
     }
 
     fun syncDevicePhotos() {
@@ -154,25 +111,72 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             }
 
             withContext(Dispatchers.IO) {
-                localPhotos.forEach { photo ->
-                    dao.insertPhoto(photo)
-                }
+                localPhotos.forEach { dao.insertPhoto(it) }
             }
             _isScanning.value = false
-
-            // Запуск распознавания лиц
             scanFacesOnPhotos()
         }
     }
 
-    /**
-     * Полноценное и надежное распознавание лиц с обработкой исключений и декодированием
-     */
+    private fun queryMediaStoreImages(context: Context): List<PhotoEntity> {
+        val photoList = mutableListOf<PhotoEntity>()
+        val projection = arrayOf(
+            MediaStore.Images.Media._ID,
+            MediaStore.Images.Media.DATE_ADDED,
+            MediaStore.Images.Media.DISPLAY_NAME,
+            MediaStore.Images.Media.SIZE,
+            MediaStore.Images.Media.WIDTH,
+            MediaStore.Images.Media.HEIGHT,
+            MediaStore.Images.Media.DATA
+        )
+        val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
+        val queryUri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+
+        try {
+            context.contentResolver.query(queryUri, projection, null, null, sortOrder)?.use { cursor ->
+                val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+                val dateColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
+                val nameColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
+                val sizeColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.SIZE)
+                val widthColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.WIDTH)
+                val heightColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.HEIGHT)
+                val dataColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATA)
+
+                while (cursor.moveToNext() && photoList.size < 800) {
+                    val id = cursor.getLong(idColumn)
+                    val dateAdded = cursor.getLong(dateColumn) * 1000L
+                    val name = cursor.getString(nameColumn) ?: "Photo"
+                    val sizeBytes = cursor.getLong(sizeColumn)
+                    val width = cursor.getInt(widthColumn)
+                    val height = cursor.getInt(heightColumn)
+                    val filePath = cursor.getString(dataColumn) ?: ""
+                    val contentUri = ContentUris.withAppendedId(queryUri, id).toString()
+
+                    val category = when {
+                        name.contains("PORTRAIT", true) || name.contains("IMG", true) -> "Портрет"
+                        name.contains("PANO", true) || name.contains("LANDSCAPE", true) -> "Природа"
+                        name.contains("DOC", true) || name.contains("SCAN", true) -> "Документы"
+                        else -> "Галерея"
+                    }
+
+                    photoList.add(
+                        PhotoEntity(
+                            id = id.toString(), uri = contentUri, dateAdded = dateAdded,
+                            locationName = name, category = category, sizeBytes = sizeBytes,
+                            width = if (width > 0) width else 1920, height = if (height > 0) height else 1080,
+                            filePath = filePath
+                        )
+                    )
+                }
+            }
+        } catch (e: Exception) { e.printStackTrace() }
+        return photoList
+    }
+
     fun scanFacesOnPhotos() {
         viewModelScope.launch {
             _isScanning.value = true
             val context = getApplication<Application>()
-
             withContext(Dispatchers.IO) {
                 val allPhotos = dao.getAllPhotos().firstOrNull() ?: emptyList()
                 val existingPersons = (dao.getAllPersons().firstOrNull() ?: emptyList()).toMutableList()
@@ -182,191 +186,77 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
                     person to allFaces.filter { it.personId == person.id }
                 }.toMutableList()
 
-                val total = allPhotos.size
-                for ((idx, photo) in allPhotos.withIndex()) {
-                    _scanProgress.value = if (total > 0) (idx + 1).toFloat() / total else 1f
-
-                    val isAlreadyScanned = allFaces.any { it.photoId == photo.id }
-                    if (isAlreadyScanned) continue
+                for (photo in allPhotos) {
+                    if (allFaces.any { it.photoId == photo.id }) continue
 
                     try {
-                        val bitmap = decodeSampledBitmapFromUri(context, Uri.parse(photo.uri), 720, 720) ?: continue
+                        val bitmap = decodeSampledBitmap(context, Uri.parse(photo.uri), 720, 720) ?: continue
                         val detectedFaces = recognitionEngine.detectFaces(bitmap)
 
                         for (face in detectedFaces) {
-                            val boundingBox = face.boundingBox
-                            val embedding = recognitionEngine.extractFaceEmbedding(bitmap, boundingBox)
-
+                            val box = face.boundingBox
+                            val embedding = recognitionEngine.extractFaceEmbedding(bitmap, box)
                             val matchedPersonId = clusteringService.assignFaceToPerson(embedding, personFacesMap)
-                            val isNewPerson = existingPersons.none { it.id == matchedPersonId } &&
-                                    personFacesMap.none { it.first.id == matchedPersonId }
-
+                            
+                            val isNewPerson = existingPersons.none { it.id == matchedPersonId }
                             val finalPersonId = if (isNewPerson) {
-                                val newPersonId = UUID.randomUUID().toString()
-                                val newPerson = PersonEntity(
-                                    id = newPersonId,
-                                    name = "Человек ${personFacesMap.size + 1}",
-                                    coverFaceUri = photo.uri,
-                                    isConfirmed = false
-                                )
+                                val newId = UUID.randomUUID().toString()
+                                val newPerson = PersonEntity(newId, "Человек ${personFacesMap.size + 1}", photo.uri, false)
                                 dao.insertPerson(newPerson)
                                 existingPersons.add(newPerson)
                                 personFacesMap.add(newPerson to emptyList())
-                                newPersonId
-                            } else {
-                                matchedPersonId
-                            }
+                                newId
+                            } else matchedPersonId
 
                             val faceEntity = FaceEntity(
-                                id = UUID.randomUUID().toString(),
-                                photoId = photo.id,
-                                personId = finalPersonId,
-                                boundingBoxJson = "{\"x\":${boundingBox.left},\"y\":${boundingBox.top},\"w\":${boundingBox.width()},\"h\":${boundingBox.height()}}",
+                                id = UUID.randomUUID().toString(), photoId = photo.id, personId = finalPersonId,
+                                boundingBoxJson = "{\"x\":${box.left},\"y\":${box.top},\"w\":${box.width()},\"h\":${box.height()}}",
                                 embedding = embedding
                             )
                             dao.insertFace(faceEntity)
                             allFaces.add(faceEntity)
                         }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
+                    } catch (e: Exception) { e.printStackTrace() }
                 }
             }
             _isScanning.value = false
         }
     }
 
-    private fun decodeSampledBitmapFromUri(context: Context, uri: Uri, reqWidth: Int, reqHeight: Int): Bitmap? {
+    private fun decodeSampledBitmap(context: Context, uri: Uri, reqWidth: Int, reqHeight: Int): Bitmap? {
         return try {
-            context.contentResolver.openInputStream(uri)?.use { inputStream ->
+            context.contentResolver.openInputStream(uri)?.use { stream ->
                 val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeStream(inputStream, null, options)
-
+                BitmapFactory.decodeStream(stream, null, options)
                 var inSampleSize = 1
                 if (options.outHeight > reqHeight || options.outWidth > reqWidth) {
-                    val halfHeight = options.outHeight / 2
-                    val halfWidth = options.outWidth / 2
+                    val halfHeight = options.outHeight / 2; val halfWidth = options.outWidth / 2
                     while ((halfHeight / inSampleSize) >= reqHeight && (halfWidth / inSampleSize) >= reqWidth) {
                         inSampleSize *= 2
                     }
                 }
-
-                val decodeOptions = BitmapFactory.Options().apply {
-                    this.inSampleSize = inSampleSize
-                    inPreferredConfig = Bitmap.Config.ARGB_8888
-                }
-
+                val decodeOptions = BitmapFactory.Options().apply { this.inSampleSize = inSampleSize }
                 context.contentResolver.openInputStream(uri)?.use { stream2 ->
                     BitmapFactory.decodeStream(stream2, null, decodeOptions)
                 }
             }
-        } catch (e: Exception) {
-            null
-        }
+        } catch (e: Exception) { null }
     }
 
-    private fun queryMediaStoreImages(context: Context): List<PhotoEntity> {
-        val photoList = mutableListOf<PhotoEntity>()
-        val projection = arrayOf(
-            MediaStore.Images.Media._ID,
-            MediaStore.Images.Media.DATE_ADDED,
-            MediaStore.Images.Media.DISPLAY_NAME
-        )
-        val sortOrder = "${MediaStore.Images.Media.DATE_ADDED} DESC"
-        val queryUri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-
-        try {
-            context.contentResolver.query(
-                queryUri,
-                projection,
-                null,
-                null,
-                sortOrder
-            )?.use { cursor ->
-                val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-                val dateColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
-                val nameColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
-
-                var count = 0
-                while (cursor.moveToNext() && count < 500) {
-                    val id = cursor.getLong(idColumn)
-                    val dateAdded = cursor.getLong(dateColumn) * 1000L
-                    val name = cursor.getString(nameColumn) ?: "Photo"
-                    val contentUri = ContentUris.withAppendedId(queryUri, id).toString()
-
-                    val category = when {
-                        name.contains("IMG", true) || name.contains("PORTRAIT", true) -> "Портрет"
-                        name.contains("PANO", true) || name.contains("LANDSCAPE", true) -> "Природа"
-                        name.contains("DOC", true) || name.contains("SCAN", true) -> "Документы"
-                        else -> "Галерея"
-                    }
-
-                    photoList.add(
-                        PhotoEntity(
-                            id = id.toString(),
-                            uri = contentUri,
-                            dateAdded = dateAdded,
-                            locationName = name,
-                            category = category,
-                            isFavorite = false,
-                            isVault = false
-                        )
-                    )
-                    count++
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        return photoList
+    fun setSort(field: SortField, direction: SortDirection) {
+        _sortField.value = field
+        _sortDirection.value = direction
     }
 
-    fun renamePerson(personId: String, newName: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            dao.renamePerson(personId, newName)
-        }
-    }
-
-    fun setSearchQuery(query: String) {
-        _searchQuery.value = query
-    }
-
-    fun selectCategory(category: String?) {
-        _selectedCategory.value = if (_selectedCategory.value == category) null else category
-    }
-
-    fun selectPerson(personId: String?) {
-        _selectedPersonId.value = if (_selectedPersonId.value == personId) null else personId
-    }
-
+    fun setGridColumns(cols: Int) { _gridColumns.value = cols }
+    fun setSearchQuery(query: String) { _searchQuery.value = query }
+    
     fun unlockVault(pin: String): Boolean {
-        return if (pin == "1234") {
-            _isVaultUnlocked.value = true
-            true
-        } else {
-            false
-        }
+        return if (pin == "1234") { _isVaultUnlocked.value = true; true } else false
     }
-
-    fun lockVault() {
-        _isVaultUnlocked.value = false
-    }
-
-    fun moveToVault(photo: PhotoEntity) {
-        viewModelScope.launch(Dispatchers.IO) {
-            dao.insertPhoto(photo.copy(isVault = true))
-        }
-    }
-
-    fun restoreFromVault(photo: PhotoEntity) {
-        viewModelScope.launch(Dispatchers.IO) {
-            dao.insertPhoto(photo.copy(isVault = false))
-        }
-    }
-
-    fun toggleFavorite(photo: PhotoEntity) {
-        viewModelScope.launch(Dispatchers.IO) {
-            dao.insertPhoto(photo.copy(isFavorite = !photo.isFavorite))
-        }
-    }
+    fun lockVault() { _isVaultUnlocked.value = false }
+    
+    fun moveToVault(photo: PhotoEntity) { viewModelScope.launch(Dispatchers.IO) { dao.insertPhoto(photo.copy(isVault = true)) } }
+    fun toggleFavorite(photo: PhotoEntity) { viewModelScope.launch(Dispatchers.IO) { dao.insertPhoto(photo.copy(isFavorite = !photo.isFavorite)) } }
+    fun deletePhoto(photo: PhotoEntity) { viewModelScope.launch(Dispatchers.IO) { dao.deletePhoto(photo.id) } }
 }
