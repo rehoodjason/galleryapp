@@ -10,9 +10,13 @@ data class PhotoEntity(
     val uri: String,
     val dateAdded: Long,
     val locationName: String? = null,
-    val category: String = "Разное",
+    val category: String = "Галерея",
     val isFavorite: Boolean = false,
-    val isVault: Boolean = false
+    val isVault: Boolean = false,
+    val sizeBytes: Long = 0L,
+    val width: Int = 1920,
+    val height: Int = 1080,
+    val filePath: String = ""
 )
 
 @Entity(tableName = "persons")
@@ -57,6 +61,9 @@ interface GalleryDao {
     @Query("SELECT * FROM photos WHERE isVault = 0 ORDER BY dateAdded DESC")
     fun getAllPhotos(): Flow<List<PhotoEntity>>
 
+    @Query("SELECT * FROM photos WHERE isVault = 1 ORDER BY dateAdded DESC")
+    fun getVaultPhotos(): Flow<List<PhotoEntity>>
+
     @Query("SELECT * FROM persons")
     fun getAllPersons(): Flow<List<PersonEntity>>
 
@@ -80,9 +87,16 @@ interface GalleryDao {
 
     @Query("UPDATE faces SET personId = :targetPersonId WHERE personId = :sourcePersonId")
     suspend fun mergePersons(sourcePersonId: String, targetPersonId: String)
+
+    @Query("DELETE FROM photos WHERE id = :photoId")
+    suspend fun deletePhoto(photoId: String)
 }
 
-@Database(entities = [PhotoEntity::class, PersonEntity::class, FaceEntity::class], version = 1, exportSchema = false)
+@Database(
+    entities = [PhotoEntity::class, PersonEntity::class, FaceEntity::class],
+    version = 1,
+    exportSchema = false
+)
 @TypeConverters(Converters::class)
 abstract class GalleryDatabase : RoomDatabase() {
     abstract fun galleryDao(): GalleryDao
