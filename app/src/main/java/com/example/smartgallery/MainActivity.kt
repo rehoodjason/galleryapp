@@ -1,4 +1,3 @@
-// ... existing code ...
 package com.example.smartgallery.viewmodel
 
 import android.Manifest
@@ -311,8 +310,7 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
 
     private fun refreshVaultPhotos() {
         viewModelScope.launch(Dispatchers.IO) {
-            val all = mutableListOf<PhotoEntity>()
-            _vaultPhotos.value = all
+            _vaultPhotos.value = emptyList()
         }
     }
 
